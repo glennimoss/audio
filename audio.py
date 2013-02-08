@@ -1,123 +1,211 @@
-import sys, wave, math, struct, random, array, re, alsaaudio
-from itertools import *
+import sys, wave, math, struct, random, array, re, alsaaudio, operator
+from itertools import islice
+from music import *
+import sounds
+from sounds import *
 
-DEFAULT_SAMPLERATE = 44100
-DEFAULT_ALSAPERIOD = 320
+_CHANNELS = 1
+_DEFAULT_SAMPLERATE = 44100
+_DEFAULT_ALSAPERIOD = int(_DEFAULT_SAMPLERATE/4)
+_ALSAPERIOD = None
 
-tau = 2*math.pi
 
-clamp = lambda x,l,h: min(max(l,x), h)
-int16 = lambda f: int(f * 32767)
+_int16 = lambda f: int(f * 32767)
 
-A4 = 440.0
-dist_A4 = {
-  'C': -9,
-  'D': -7,
-  'E': -5,
-  'F': -4,
-  'G': -2,
-  'A': 0,
-  'B': 2,
-}
-note_re = re.compile(r'([ABCDEFG])(#*|b*)(\d+)')
+class Patch:
 
-def freq (note):
-  m = note_re.match(note)
-  scale, accidental, octave = m.groups()
-  octave = int(octave)
-
-  halfs = dist_A4[scale] + (octave - 4)*12 + (-1 if accidental.startswith('b') else 1)*len(accidental)
-  return A4 * 2**(halfs/12)
-
-class Sound:
-
-  def __init__ (self, data=None, samplerate=DEFAULT_SAMPLERATE):
-    self.samplerate = samplerate
-    self.data = data
-
-  def for_ (self, sec):
-    return islice(cycle(self.data), int(sec*self.samplerate))
-
-class PeriodicWave (Sound):
-
-  def __init__ (self, note='A4', amp=0.5, **kwargs):
-    super().__init__(**kwargs)
-    self.freq = freq(note)
-    self.amp = clamp(float(amp), 0, 1)
-
-    period = int(self.samplerate / self.freq)
-    self.data = [int16(self._sample(i/period)) for i in range(period)]
-
-  def _sample (self, t):
-    return 0
-
-  def one_period (self):
-    return [self._sample(t) for t in (0,0.125,0.25,0.375,0.5,0.625,0.75,0.875,1)]
-
-  def synthesize (self, ):
+  def __init__ (self, input, filter):
     pass
 
-class SineWave (PeriodicWave):
-  def _sample (self, t):
-    return self.amp * math.sin(tau*t)
-print('SineWave', SineWave().one_period())
+class Filter:
+  def sample (self, input):
+    for samp in input:
+      yield self._sample(samp)
 
-class SquareWave (PeriodicWave):
-  def __init__ (self, duty=0.5, **kwargs):
-    self.duty = clamp(duty, 0, 1)
-    super().__init__(**kwargs)
+  def _sample (self, samp):
+    return samp
 
-  def _sample (self, t):
-    return self.amp * (t <= self.duty) - self.amp * (t > self.duty)
-print('SquareWave', SquareWave().one_period())
+class Volume (Filter):
+  def __init__ (self, vol):
+    self.vol = vol
 
-class SawtoothWave (PeriodicWave):
-  def _sample (self, t):
-    t = (t - 0.5) % 1
-    return 2*self.amp * t - self.amp
-print('SawtoothWave', SawtoothWave().one_period())
-
-class TriangleWave (SawtoothWave):
-  def _sample (self, t):
-    t = (t + 0.25) % 1
-    return 2*abs(super()._sample(t)) - self.amp
-print('TriangleWave', TriangleWave().one_period())
+  def _sample (self, samp):
+    return samp * self.vol
 
 
-CHANNELS = 2
-samples = array.array('h')
-for samp in chain(SineWave().for_(0.5),
-                  SquareWave().for_(0.5),
-                  SawtoothWave().for_(0.5),
-                  TriangleWave().for_(0.5),
-                 ):
-  samples.extend([samp]*CHANNELS)
 
-samples.extend([0] * (DEFAULT_ALSAPERIOD - (len(samples) %
-                                            DEFAULT_ALSAPERIOD))*CHANNELS)
+def Player (tempo, sound, env, notes):
+  """
+  Tempo is in bars/min. Whereas 120bpm usually means 120 quarter notes per
+  minute, we would say 40 bars/min. This makes tempo independent of time
+  signature.
+  """
+  beat = 60 / tempo
+  for pitch, size in notes:
+    dur = beat * size
 
+    for sample in (env.gen(sound, pitch, dur) if pitch else Silence.gen(dur)):
+      yield sample
+
+def MultiPlayer (tempo, sound, env, musics):
+  for samples in zip(*(Player(tempo, sound, env, notes) for notes in musics)):
+    yield sum(samples)/len(samples)
+
+
+
+class Mixer:
+
+  def __init__ (self, *args):
+    self.inputs = []
+    for arg in args:
+      try:
+        input, weight = arg
+        self.inputs.append((input, weight))
+      except ValueError:
+        self.inputs.append((arg, 1))
+
+  def add (self, input, weight=1):
+    self.inputs.append((input, weight))
+
+  def __iter__ (self):
+    weighted_samples = []
+    for input, weight in self.inputs:
+      weighted_samples.append(samp*weight for samp in input)
+
+    for samps in zip(*weighted_samples):
+      yield sum(samps)/len(samps)
+
+
+def chunk(iter, size):
+  a = array.array('h', (0 for x in range(size)))
+
+  while True:
+
+    i = -1
+    for i, samp in enumerate(islice(iter, size)):
+      a[i] = _int16(samp)
+
+    if i == -1:
+      break
+
+    if i < size -1:
+      for i in range(i+1, size):
+        a[i] = 0
+
+    yield a
+
+  #for i in iter:
+    #a.extend([_int16(i)]*_CHANNELS)
+
+    #if len(a) == size:
+      #yield a
+      #a = array.array('h')
+  #if len(a):
+    #yield a
+
+
+def play(tempo=40):
+  global _ALSAPERIOD
+  out = alsaaudio.PCM() #mode=alsaaudio.PCM_NONBLOCK)
+  out.setchannels(_CHANNELS)
+  out.setformat(alsaaudio.PCM_FORMAT_S16_LE)
+  sounds.SAMPLERATE = out.setrate(_DEFAULT_SAMPLERATE)
+  sounds.SAMPLEDUR = 1/sounds.SAMPLERATE * 1000
+  _ALSAPERIOD = out.setperiodsize(_DEFAULT_ALSAPERIOD)
+  print(sounds.SAMPLERATE, _ALSAPERIOD)
+
+
+  """
+  |--------|--------|----|
+  |       O|        |    |
+  |------O-|------O.|---O|
+  |     O  |  O...  | O. |
+  |----O---|O.----O.|O--O|
+  |   O    |  O...  | O. |
+  |--O-----|O.----O.|O--O|
+  | O      |  O...  | O. |
+  |O-------|O.------|O---|
+  """
+
+  """
+  E4|--------|--------|--------|--------|--------|--------|--------|:--------------:|
+  B4|--------|--------|--------|--------|--------|--------|--------|:0 -0-0-0 -----:|
+  G3|--------|4---4 -2|--------|4   4 -2|--------|4 --4 -2|--------|:4 -4-4-4 -----:|
+  D3|-------2|4---4 -2|-------2|4   4 -2|-------2|4 --4 -2|-------2|:4 -2-2-2 -----:|
+  A3|-----04-|2---2 -0|-----04-|2   2 -0|-----04-|2 --2 -0|-----04-|:2 -0-0-2 --040:|
+  E2|---04---|------4-|---04---|------4-|---04---|------2-|---04---|:-------0 24---:|
+  """
+  #music = PianoRoll("/8 E F G A5 B5 C5 D5 E5 /4 [E G B] [F A C]/2 [G B D]")
+  #music1 = PianoRoll("/8 E F G A5 B5 C5 D5 E5 /4 E F/2  G")
+  #music2 = PianoRoll("/8 ; ; ; ;  ;  ;  ;  ;  /4 G A5/2 B5")
+  #music3 = PianoRoll("/8 ; ; ; ;  ;  ;  ;  ;  /4 B C5/2 D5")
+
+  #music = PianoRoll("B A G A B B B/2 A A A/2 B D5 D5/2 B A G A B B B B A A B A G/1")
+  music1 = PianoRoll("/8 E2 G#2 , A3 C#3 , E3 B3/4 ; ,, B3/4 , G#2 A3 ;/4 " * 1 +
+                    "E2 G#2 , A3 C#3 , E3 " +
+                    "B3/4 ; A3 ; A3 ; E2/4 F#2 G#2 A3 C#3 A3 " * 4
+                   )
+  music2 = PianoRoll("/8 ; ; , ; ; , ; F#3/4 ; ,, F#3/4 , ; E3 ;/4 " * 1 +
+                    "; ; , ; ; , ; " +
+                    "F#3/4 ; E3 ; E3 ; B3/4 ; ; ; ; ; " * 4
+                   )
+  music3 = PianoRoll("/8 ; ; , ; ; , ; B4/4 ; ,, B4/4 , ; A4 ;/4 " * 1 +
+                    "; ; , ; ; , ; " +
+                    "B4/4 ; A4 ; A4 ; E3/4 ; ; ; ; ; " * 4
+                   )
+  env = Envelope(100, 25, .4, 25)
+  #synth1 = Volume(0.5).sample(Player(tempo, SquareWave(), env, music1))
+  #synth2 = Volume(0.5).sample(Player(tempo, SquareWave(), env, music2))
+  #synth3 = Volume(0.5).sample(Player(tempo, SquareWave(), env, music3))
+  #mixed = Mixer(synth1, synth2, synth3)
+
+  import tabreader
+  mixed = MultiPlayer(tempo, FMSynth(3, 2), env,
+                      [PianoRoll(n) for n in tabreader.read(tabreader.ex_tabs)])
+  #mixed = MultiPlayer(tempo, SquareWave(), env,
+                      #[PianoRoll(n) for n in tabreader.read(mytab)])
+
+  #samples = array.array('h')
+  #for samp in mixed:
+    #samples.extend([_int16(samp)]*_CHANNELS)
+
+  #samples.extend([0] * (_ALSAPERIOD - (len(samples) %
+                                              #_ALSAPERIOD))*_CHANNELS)
+
+  #numSamps = len(samples)//_CHANNELS
+  #alsaPeriods = numSamps/_ALSAPERIOD
+  #print("about to write {} ints, {} samples, {} periods for {}s".format(
+    #len(samples), numSamps, alsaPeriods, numSamps/_SAMPLERATE))
+  i = 0
+  wroten = []
+  blocked = 0
+  for bs in chunk(mixed, _ALSAPERIOD*_CHANNELS):
+    #wrote = out.write(samples[i:i+_ALSAPERIOD*_CHANNELS])
+    wrote = out.write(bs)
+    if wrote > 0:
+      if blocked < 0:
+        wroten.append(blocked)
+        blocked = 0
+      wroten.append(wrote)
+      i += wrote*_CHANNELS
+    else:
+      blocked -= 1
+
+  #print(len(samples), out.write(samples))
+  print("written")
+  print(wroten)
+
+  out.close()
+  print("closed")
+
+mytab = """
+E4|--------|
+B4|-------0|
+G3|------0 |
+D3|----0   |
+A3|--0     |
+E2|0       |
 """
-samples = array.array('h', chain(SineWave().for_(0.5),
-                                 SquareWave().for_(0.5),
-                                 SawtoothWave().for_(0.5),
-                                 TriangleWave().for_(0.5),
-                                ))
-"""
 
-out = alsaaudio.PCM()
-out.setchannels(CHANNELS)
-out.setformat(alsaaudio.PCM_FORMAT_S16_LE)
-out.setperiodsize(DEFAULT_ALSAPERIOD)
-
-print("about to write", len(samples), len(samples)//CHANNELS)
-i = 0
-while i < len(samples):
-  wrote = out.write(samples[i:]) #i+DEFAULT_ALSAPERIOD*CHANNELS])
-  print(wrote)
-  i += wrote*CHANNELS
-
-#print(len(samples), out.write(samples))
-print("written")
-
-out.close()
-print("closed")
+if __name__ == '__main__':
+  play(33)
