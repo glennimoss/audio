@@ -104,7 +104,7 @@ def chunk(iter, size):
     #yield a
 
 
-def play(tempo=40):
+def play(tempo=33, I=0, H=1, sound=None):
   global _ALSAPERIOD
   out = alsaaudio.PCM() #mode=alsaaudio.PCM_NONBLOCK)
   out.setchannels(_CHANNELS)
@@ -159,8 +159,10 @@ def play(tempo=40):
   #synth3 = Volume(0.5).sample(Player(tempo, SquareWave(), env, music3))
   #mixed = Mixer(synth1, synth2, synth3)
 
+  if sound is None:
+    sound = FMSynth(I, H)
   import tabreader
-  mixed = MultiPlayer(tempo, FMSynth(3, 2), env,
+  mixed = MultiPlayer(tempo, sound, env,
                       [PianoRoll(n) for n in tabreader.read(tabreader.ex_tabs)])
   #mixed = MultiPlayer(tempo, SquareWave(), env,
                       #[PianoRoll(n) for n in tabreader.read(mytab)])
@@ -208,4 +210,4 @@ E2|0       |
 """
 
 if __name__ == '__main__':
-  play(33)
+  play()
