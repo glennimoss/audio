@@ -40,7 +40,7 @@ E2|---04---|------4-|---04---|------4-|---04---|------4-|---04---|-------0 24---
 
 
 def read (tabs):
-  if not hasattr(tabs, '__iter__'):
+  if isinstance(tabs, str):
     tabs = [tabs]
 
   signature = '4/4'
@@ -48,7 +48,7 @@ def read (tabs):
   musics = []
   strings = [tab.splitlines() for tab in tabs]
   strings = [''.join(l) for l in zip(*strings)]
-  pprint.pprint(strings)
+  #pprint.pprint(strings)
   for string in strings:
     if not string:
       continue
@@ -63,19 +63,19 @@ def read (tabs):
           music.append([';', deflen])
       elif beat == ' ':
         music[-1][1] += deflen
-        print("new len", music[-1][1])
+        #print("new len", music[-1][1])
       elif beat.isdigit():
         music.append([offset(string_pitch, int(beat)), deflen])
-      else:
-        print(beat, 'was not valid')
+      #else:
+        #print(beat, 'was not valid')
 
-    print(len(music))
+    #print(len(music))
     musics.append('/8 ' + ' '.join('/'.join(
       filter(None, (note, None if dur == deflen else to_dotted(dur))))
       for note, dur in music))
 
 
-  pprint.pprint(musics)
+  #pprint.pprint(musics)
   return musics
 
 
