@@ -1,8 +1,8 @@
 import math
 from util import cimethod
 
-SAMPLERATE = 0
-SAMPLEDUR = 0
+SAMPLERATE = 44100
+SAMPLEDUR = 1/SAMPLERATE * 1000
 
 _clamp = lambda x,l,h: min(max(l,x), h)
 _tau = 2*math.pi
@@ -24,6 +24,7 @@ class Silence:
       yield 0
 
 class PeriodicWave:
+  _period = 1
 
   @classmethod
   def _sample (cls, t):
@@ -36,14 +37,16 @@ class PeriodicWave:
   @cimethod
   def gen (cls, freq, dur):
     period = int(SAMPLERATE / freq)
-    data = [cls._sample(i/period) for i in range(period)]
+    data = [cls._sample(cls._period*i/period) for i in range(period)]
     for i in range(int(SAMPLERATE * dur)):
       yield data[i % period]
 
 class SineWave (PeriodicWave):
+  _period = _tau
+
   @classmethod
   def _sample (cls, t):
-    return math.sin(_tau*t)
+    return math.sin(t)
 #print('SineWave', SineWave().one_period())
 
 class SquareWave (PeriodicWave):
@@ -61,14 +64,12 @@ class SquareWave (PeriodicWave):
 class SawtoothWave (PeriodicWave):
   @classmethod
   def _sample (cls, t):
-    t = (t - 0.5) % 1
-    return 2 * t - 1
-#print('SawtoothWave', SawtoothWave().one_period())
+    return 1 - 2*t
+print('SawtoothWave', SawtoothWave().one_period())
 
 class TriangleWave (SawtoothWave):
   @classmethod
   def _sample (cls, t):
-    t = (t + 0.25) % 1
     return 2*abs(super()._sample(t)) - 1
 #print('TriangleWave', TriangleWave().one_period())
 
@@ -105,9 +106,33 @@ class Envelope:
       idx += SAMPLEDUR
 
 class FMSynth (PeriodicWave):
-  def __init__ (self, I, H):
+  def __init__ (self, I, H, fund=SineWave, mod=SineWave):
+    self.fund = fund
+    self.mod = mod
     self.I = I
-    self.H = H
+    self.H = H * mod._period / fund._period
+
+  @property
+  def _period (self):
+    return self.fund._period
 
   def _sample (self, t):
-    return math.sin(_tau*t + self.I*math.sin(_tau*self.H*t))
+    return self.fund._sample(t + self.I*self.mod._sample(self.H*t))
+
+class Filter:
+  def sample (self, input):
+    for samp in input:
+      yield _clamp(self._sample(samp), -1, 1)
+
+  def _sample (self, samp):
+    return samp
+
+class Volume (Filter):
+  def __init__ (self, vol):
+    self.vol = vol
+
+  def _sample (self, samp):
+    return samp * self.vol
+
+
+

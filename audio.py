@@ -1,37 +1,18 @@
 import sys, wave, math, struct, random, array, re, alsaaudio, operator
 from itertools import islice
 from music import *
-import sounds
+import sounds, tabreader
 from sounds import *
 from util import chunk
 
 _CHANNELS = 1
 _DEFAULT_SAMPLERATE = 44100
-_DEFAULT_ALSAPERIOD = int(_DEFAULT_SAMPLERATE/4)
-_ALSAPERIOD = None
 
 
 class Patch:
 
   def __init__ (self, input, filter):
     pass
-
-class Filter:
-  def sample (self, input):
-    for samp in input:
-      yield self._sample(samp)
-
-  def _sample (self, samp):
-    return samp
-
-class Volume (Filter):
-  def __init__ (self, vol):
-    self.vol = vol
-
-  def _sample (self, samp):
-    return samp * self.vol
-
-
 
 def Player (tempo, sound, env, notes):
   """
@@ -75,110 +56,50 @@ class Mixer:
       yield sum(samps)/len(samps)
 
 
-def play(tempo=33, I=0, H=1, sound=None):
-  global _ALSAPERIOD
-  out = alsaaudio.PCM() #mode=alsaaudio.PCM_NONBLOCK)
+def gensound (tempo=33, I=0, H=1, sound=None):
+  if sound is None:
+    sound = FMSynth(I, H)
+  env = Envelope(25, 25, .4, 25)
+  return MultiPlayer(tempo, sound, env,
+                     [PianoRoll(n) for n in tabreader.read(tabreader.ex_tabs)])
+
+def play (data=None, **kwargs):
+  if data is None:
+    data = gensound(**kwargs)
+
+  out = alsaaudio.PCM()
   out.setchannels(_CHANNELS)
   out.setformat(alsaaudio.PCM_FORMAT_S16_LE)
   sounds.SAMPLERATE = out.setrate(_DEFAULT_SAMPLERATE)
   sounds.SAMPLEDUR = 1/sounds.SAMPLERATE * 1000
-  _ALSAPERIOD = out.setperiodsize(_DEFAULT_ALSAPERIOD)
-  print(sounds.SAMPLERATE, _ALSAPERIOD)
+  _ALSAPERIOD = out.setperiodsize(int(sounds.SAMPLERATE/4))
+  #print(sounds.SAMPLERATE, _ALSAPERIOD)
 
-
-  """
-  |--------|--------|----|
-  |       O|        |    |
-  |------O-|------O.|---O|
-  |     O  |  O...  | O. |
-  |----O---|O.----O.|O--O|
-  |   O    |  O...  | O. |
-  |--O-----|O.----O.|O--O|
-  | O      |  O...  | O. |
-  |O-------|O.------|O---|
-  """
-
-  """
-  E4|--------|--------|--------|--------|--------|--------|--------|:--------------:|
-  B4|--------|--------|--------|--------|--------|--------|--------|:0 -0-0-0 -----:|
-  G3|--------|4---4 -2|--------|4   4 -2|--------|4 --4 -2|--------|:4 -4-4-4 -----:|
-  D3|-------2|4---4 -2|-------2|4   4 -2|-------2|4 --4 -2|-------2|:4 -2-2-2 -----:|
-  A3|-----04-|2---2 -0|-----04-|2   2 -0|-----04-|2 --2 -0|-----04-|:2 -0-0-2 --040:|
-  E2|---04---|------4-|---04---|------4-|---04---|------2-|---04---|:-------0 24---:|
-  """
-  #music = PianoRoll("/8 E F G A5 B5 C5 D5 E5 /4 [E G B] [F A C]/2 [G B D]")
-  #music1 = PianoRoll("/8 E F G A5 B5 C5 D5 E5 /4 E F/2  G")
-  #music2 = PianoRoll("/8 ; ; ; ;  ;  ;  ;  ;  /4 G A5/2 B5")
-  #music3 = PianoRoll("/8 ; ; ; ;  ;  ;  ;  ;  /4 B C5/2 D5")
-
-  #music = PianoRoll("B A G A B B B/2 A A A/2 B D5 D5/2 B A G A B B B B A A B A G/1")
-  music1 = PianoRoll("/8 E2 G#2 , A3 C#3 , E3 B3/4 ; ,, B3/4 , G#2 A3 ;/4 " * 1 +
-                    "E2 G#2 , A3 C#3 , E3 " +
-                    "B3/4 ; A3 ; A3 ; E2/4 F#2 G#2 A3 C#3 A3 " * 4
-                   )
-  music2 = PianoRoll("/8 ; ; , ; ; , ; F#3/4 ; ,, F#3/4 , ; E3 ;/4 " * 1 +
-                    "; ; , ; ; , ; " +
-                    "F#3/4 ; E3 ; E3 ; B3/4 ; ; ; ; ; " * 4
-                   )
-  music3 = PianoRoll("/8 ; ; , ; ; , ; B4/4 ; ,, B4/4 , ; A4 ;/4 " * 1 +
-                    "; ; , ; ; , ; " +
-                    "B4/4 ; A4 ; A4 ; E3/4 ; ; ; ; ; " * 4
-                   )
-  env = Envelope(100, 25, .4, 25)
-  #synth1 = Volume(0.5).sample(Player(tempo, SquareWave(), env, music1))
-  #synth2 = Volume(0.5).sample(Player(tempo, SquareWave(), env, music2))
-  #synth3 = Volume(0.5).sample(Player(tempo, SquareWave(), env, music3))
-  #mixed = Mixer(synth1, synth2, synth3)
-
-  if sound is None:
-    sound = FMSynth(I, H)
-  import tabreader
-  mixed = MultiPlayer(tempo, sound, env,
-                      [PianoRoll(n) for n in tabreader.read(tabreader.ex_tabs)])
-  #mixed = MultiPlayer(tempo, SquareWave(), env,
-                      #[PianoRoll(n) for n in tabreader.read(mytab)])
-
-  #samples = array.array('h')
-  #for samp in mixed:
-    #samples.extend([_int16(samp)]*_CHANNELS)
-
-  #samples.extend([0] * (_ALSAPERIOD - (len(samples) %
-                                              #_ALSAPERIOD))*_CHANNELS)
-
-  #numSamps = len(samples)//_CHANNELS
-  #alsaPeriods = numSamps/_ALSAPERIOD
-  #print("about to write {} ints, {} samples, {} periods for {}s".format(
-    #len(samples), numSamps, alsaPeriods, numSamps/_SAMPLERATE))
-  i = 0
   wroten = []
-  blocked = 0
-  for bs in chunk(mixed, _ALSAPERIOD*_CHANNELS):
-    #wrote = out.write(samples[i:i+_ALSAPERIOD*_CHANNELS])
+  for bs in chunk(data, _ALSAPERIOD*_CHANNELS):
     wrote = out.write(bs)
-    if wrote > 0:
-      if blocked < 0:
-        wroten.append(blocked)
-        blocked = 0
-      wroten.append(wrote)
-      i += wrote*_CHANNELS
-    else:
-      blocked -= 1
+    wroten.append(wrote)
+    if wrote != _ALSAPERIOD:
+      print("WTF? only wrote", wrote, "/", _ALSAPERIOD)
 
-  #print(len(samples), out.write(samples))
-  print("written")
-  print(wroten)
+  #print("written", wroten)
 
   out.close()
-  print("closed")
+  #print("closed")
 
-mytab = """
-E4|--------|
-B4|-------0|
-G3|------0 |
-D3|----0   |
-A3|--0     |
-E2|0       |
-"""
+def write (filename="out", data=None, **kwargs):
+  if data is None:
+    data = gensound(**kwargs)
+
+  f = wave.open(filename + ".wav", 'w')
+  f.setnchannels(_CHANNELS)
+  f.setsampwidth(2)
+  f.setframerate(sounds.SAMPLERATE)
+  f.setcomptype('NONE', 'not compressed')
+
+  bytes = array.array('h',(_int16(s) for s in data))
+  f.writeframes(bytes)
+  f.close()
 
 if __name__ == '__main__':
   play()
