@@ -3,14 +3,13 @@ from itertools import islice
 from music import *
 import sounds
 from sounds import *
+from util import chunk
 
 _CHANNELS = 1
 _DEFAULT_SAMPLERATE = 44100
 _DEFAULT_ALSAPERIOD = int(_DEFAULT_SAMPLERATE/4)
 _ALSAPERIOD = None
 
-
-_int16 = lambda f: int(f * 32767)
 
 class Patch:
 
@@ -74,34 +73,6 @@ class Mixer:
 
     for samps in zip(*weighted_samples):
       yield sum(samps)/len(samps)
-
-
-def chunk(iter, size):
-  a = array.array('h', (0 for x in range(size)))
-
-  while True:
-
-    i = -1
-    for i, samp in enumerate(islice(iter, size)):
-      a[i] = _int16(samp)
-
-    if i == -1:
-      break
-
-    if i < size -1:
-      for i in range(i+1, size):
-        a[i] = 0
-
-    yield a
-
-  #for i in iter:
-    #a.extend([_int16(i)]*_CHANNELS)
-
-    #if len(a) == size:
-      #yield a
-      #a = array.array('h')
-  #if len(a):
-    #yield a
 
 
 def play(tempo=33, I=0, H=1, sound=None):

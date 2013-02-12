@@ -1,3 +1,5 @@
+import array
+from itertools import islice
 from functools import partial
 
 class cimethod:
@@ -26,3 +28,24 @@ class cimethod:
     return func(obj, *args, **kwargs)
 
 
+_int16 = lambda f: int(f * 32767)
+def chunk(iter, size):
+  a = array.array('h', (0 for x in range(size)))
+
+  while True:
+
+    i = -1
+    for i, samp in enumerate(islice(iter, size)):
+      a[i] = _int16(samp)
+
+    if i == -1:
+      break
+
+    if i < size -1:
+      for i in range(i+1, size):
+        a[i] = 0
+
+    yield a
+
+def byte_array (iter):
+  return array.array('h', (_int16(s) for s in iter))
