@@ -70,8 +70,8 @@ print('SawtoothWave', SawtoothWave().one_period())
 class TriangleWave (SawtoothWave):
   @classmethod
   def _sample (cls, t):
-    return 2*abs(super()._sample(t)) - 1
-#print('TriangleWave', TriangleWave().one_period())
+    return 2*abs(super()._sample((t - 1/4) % 1)) - 1
+print('TriangleWave', TriangleWave().one_period())
 
 
 class Envelope:
