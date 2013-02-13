@@ -104,7 +104,13 @@ _dotval = {
   '!': 8,
 }
 
-def PianoRoll (notes):
+def PianoRoll (tempo, notes):
+  """
+  Tempo is in bars/min. Whereas 120bpm usually means 120 quarter notes per
+  minute, we would say 40 bars/min. This makes tempo independent of time
+  signature.
+  """
+  beat = 60 / tempo
   notes = notes.split()
   default_size = Fraction(1, 4)
 
@@ -123,12 +129,12 @@ def PianoRoll (notes):
         if dots:
           size = to_dur(size, dots)
 
-        yield pitch, size
+        yield pitch, size*beat
       else:
         if size:
           default_size = size
     except AttributeError:
       # Ignore garbage
-      print("Garbage:", note)
+      #print("Garbage:", note)
       pass
 

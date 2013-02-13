@@ -9,26 +9,18 @@ _CHANNELS = 1
 _DEFAULT_SAMPLERATE = 44100
 
 
-class Patch:
-
-  def __init__ (self, input, filter):
-    pass
-
-def Player (tempo, sound, env, notes):
+def Player (sound, env, notes):
   """
   Tempo is in bars/min. Whereas 120bpm usually means 120 quarter notes per
   minute, we would say 40 bars/min. This makes tempo independent of time
   signature.
   """
-  beat = 60 / tempo
-  for pitch, size in notes:
-    dur = beat * size
-
+  for pitch, dur in notes:
     for sample in (env.gen(sound, pitch, dur) if pitch else Silence.gen(dur)):
       yield sample
 
-def MultiPlayer (tempo, sound, env, musics):
-  for samples in zip(*(Player(tempo, sound, env, notes) for notes in musics)):
+def MultiPlayer (sound, env, musics):
+  for samples in zip(*(Player(sound, env, notes) for notes in musics)):
     yield sum(samples)/len(samples)
 
 
@@ -56,12 +48,12 @@ class Mixer:
       yield sum(samps)/len(samps)
 
 
-def gensound (tempo=33, I=0, H=1, sound=None):
+def gensound (tempo=33, I=1, H=1, sound=None):
   if sound is None:
     sound = FMSynth(I, H)
   env = Envelope(25, 25, .4, 25)
-  return MultiPlayer(tempo, sound, env,
-                     [PianoRoll(n) for n in tabreader.read(tabreader.ex_tabs)])
+  return MultiPlayer(sound, env, [PianoRoll(tempo, n)
+                                  for n in tabreader.read(tabreader.ex_tabs)])
 
 def play (data=None, **kwargs):
   if data is None:

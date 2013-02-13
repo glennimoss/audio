@@ -1,17 +1,19 @@
 from collections import deque
 from util import NamedDescriptor, NamedMeta
 from math import sin, floor, pi
+
 _tau = 2*pi
 
 class Input (NamedDescriptor):
-  def __init__ (self, type=None):
+  def __init__ (self, type=None, **kwargs):
     self.type = type
+    self.kwargs = kwargs
 
   def __set__ (self, instance, value):
     if not isinstance(value, Signal):
       value = Const(value)
     if self.type and not isinstance(value, self.type):
-      value = self.type(value)
+      value = self.type(value, **self.kwargs)
     super().__set__(instance, value)
 
 class SpaceTimeContinuumError (Exception):
@@ -47,22 +49,22 @@ class FrequencySignal (Signal):
   """
   input = Input()
 
-  def __init__ (self, input):
+  def __init__ (self, input, convert=None):
     self.input = input
-    self.convert = not (
-      (isinstance(self.input, Const) and self.input.val > 1) or
-      (isinstance(self.input, FrequencySignal)))
-      #self._sample = input._sample
-      #self.__call__ = input.__call__
+    self.convert = convert
+    if convert is None:
+      self.convert = not (
+        (isinstance(self._input, Const) and self._input.val > 1) or
+        (isinstance(self._input, FrequencySignal)))
 
   def __call__ (self, t):
     if self.convert:
-      return (self.input(t)+1)*5500
-    return self.input(t)
+      return (self._input(t)+1)*5500
+    return self._input(t)
 
 class Const (Signal):
   def __init__ (self, val):
-    self.val = val
+    self.val = val if val is not None else 0
 
   def __call__ (self, t):
     return self.val
@@ -113,7 +115,7 @@ class GateSignal (Signal):
   output is 0.
   """
   input = Input()
-  thresh = Thresh()
+  thresh = Input()
 
   def __init__ (self, input, thresh=0.5):
     self.input = input
@@ -155,42 +157,46 @@ class ADSREnvelope (Signal):
 
     self.start_A = None
     self.start_R = None
-    self.last_samp = None
+    self.last_samp = 0
+    self.last_t = -1/DEFAULT_SAMPLERATE
 
 
   def __call__ (self, t):
-    trigger = self.trigger(t)
-    gate = self.gate(t)
+    trigger = self._trigger(t)
+    gate = self._gate(t)
     if trigger:
       self.start_A = t
-      #self.start_D = t + self.A(t)
-      #self.start_S = self.start_D + self.D(t)
+      self.start_R = None
 
-    samp = None
+    samp = 0
+    S = self._S(t)
     if gate:
-      A = self.A(t)
-      D = self.D(t)
-      start_D = self.startA + A
+      A = self._A(t)
+      D = self._D(t)
+      start_D = self.start_A + A
       start_S = start_D + D
       if self.start_A <= t < start_D:
         # Attack
-        samp = (t - self.start_A) / A
+        samp = (self.last_samp +
+                (1 - self.last_samp)/(self.start_A + A - t)*(t - self.last_t))
       elif start_D <= t < start_S:
         # Decay
-        samp = 1 - (t - start_D) / D
+        samp = 1 - (t - start_D)*(1-S)/D
       else:
         # Sustain
-        samp = self.S
-    elif self.last_samp is not None:
+        samp = S
+    elif self.last_samp:
       # Release...
       if not self.start_R:
         self.start_R = t
 
-      R = self.R(t)
+      R = self._R(t)
       if self.start_R <= t < self.start_R + R:
-        samp = self.S * (1 - (t - self.start_R) / R)
+        samp = (self.last_samp -
+                self.last_samp/(self.start_R + R - t)*(t - self.last_t))
 
     self.last_samp = samp
+    self.last_t = t
     return samp
 
 def p2f (p):
@@ -213,8 +219,8 @@ def f2p (f):
 class PhasedSignal (Signal):
   freq = Input(FrequencySignal)
 
-  def __init__ (self, pitch=None):
-    self.freq = pitch
+  def __init__ (self, freq=None):
+    self.freq = freq
     self.pa = 0
     self.last_t = 0
 
@@ -249,6 +255,7 @@ class Amp (Signal):
   def __call__ (self, t):
     return self._ratio(t) * self._input(t)
 
+
 class Bias (Signal):
   input = Input()
   offset = Input()
@@ -262,40 +269,61 @@ class Bias (Signal):
 
 class Sequence (Signal):
   def __init__ (self, steps=[]):
-    self.steps = deque(steps)
+    self.steps = iter(steps)
     self.until = 0
     self._next_step()
 
   def _next_step (self):
-    self.input, dur = self.steps.popleft()
-    self.until += dur
-
-  def append (self, input, dur):
-    self.steps.append((input, dur))
-
-  def extend (self, steps)
-    self.steps.extend(steps)
+    try:
+      self.input, dur = next(self.steps)
+      self.until += dur
+    except StopIteration:
+      self.input = None
+      self.until = 0
 
   def __call__ (self, t):
-    if t > self.until:
+    if t > self.until and self.steps:
       self._next_step()
 
-    return self.input(t)
+    if not self.input:
+      return 0
+    if callable(self.input):
+      return self.input(t)
+    return self.input
 
 class Synth (Sequence):
   oscillator = Input()
   envelope = Input()
 
-  def __init__ (self, oscillator=Sine):
+  def __init__ (self, steps=[], oscillator=Sine(), A=0.1, D=0.1, S=0.5, R=0.1):
     self.oscillator = oscillator
     self.env_trigger = Trigger()
     self.env_gate = Gate()
-    self.envelope = ADSREnvelope(100, 100, 0.8, 100, self.env_trigger,
-                                 self.env_gate)
-    self.output = Amp(self.envelope, self.seq)
+    self.envelope = ADSREnvelope(A, D, S, R, self.env_trigger, self.env_gate)
+    self.output = Amp(self._envelope, self._oscillator)
+    super().__init__(steps)
 
   def __call__ (self, t):
-    self.oscillator
+    if t > self.until:
+      self._next_step()
+      if callable(self.input):
+        freq = self.input(t)
+      freq = self.input
+      if freq is None:
+        self.env_gate.off()
+      else:
+        self.env_trigger.fire()
+        self.env_gate.on()
+        self._oscillator.freq = freq
+
+    return self.output(t)
+
+def MultiSynth (synths):
+  def output (t):
+    samples = [synth(t) for synth in synths]
+    return sum(samples)/len(samples)
+
+  return output
 
 
 def Sampler (input, sample_rate, dur=None):
@@ -332,6 +360,7 @@ def play (input, dur):
     if wrote != ALSAPERIOD:
       print("Huh? Only wrote {}/{}".format(wrote, ALSAPERIOD))
 
+  print('Closing...')
   out.close()
 
 def write (input, dur, filename='out.wav'):
@@ -355,31 +384,46 @@ def write (input, dur, filename='out.wav'):
     rf.write(bytes)
 
 def generate (input, dur):
+  """ For profiling. """
   return list(Sampler(input, DEFAULT_SAMPLERATE, dur))
+
+def random_walk ():
+  import random
+  freq = 440
+
+  while True:
+    if random.random() < 1/5:
+      yield (None, 0.25)
+    else:
+      yield (freq, 0.25)
+      steps = random.randint(-12, 12)
+      freq *= 2**(steps/12)
+
 
 
 if __name__ == '__main__':
-  #print([x for x in Sampler(Sine(Const(f2p(440))),
-  #play(Sine(Const(f2p(440))), 2)
-  #play(Sine(Saw(Const(f2p(1/2)))), 2)
-  #write(Sine(Saw(Const(f2p(1/2)))), 2)
-  #play(Sine(lambda t: t - 1 ), 2)
-  #write(Sine(Saw(Const(f2p(1/10)))), 10)
-  #write(Sine(lambda t: math.floor((t/5-1)*10)/10 ), 10)
-  #play(Sine(lambda t: t/5 - 1 ), 10)
-  #play(Saw(lambda t: math.floor((t/5-1)*10)/10.0 ), 10)
-  #write(Sine(lambda t: 22000**(t/10) ), 10)
-  #write(Sine(Const(f2p(20000))), 2)
+  #synth = Synth(oscillator=Square(), A=0.03, D=0.03)
+  #synth.extend((
+    #(440, 0.25),
+    #(440 * 2**(2/12), 0.25),
+    #(440 * 2**(3/12), 0.25),
+    #(None, 0.25),
+    #(220, 0.25),
+    #(220 * 2**(2/12), 0.25),
+    #(220 * 2**(3/12), 0.25),
+  #))
 
-  #play(Sequence((
-    #(Sine(f2p(440)), 2),
-    #(Const(0), 2),
-  #)), 4)
+  #rw = random_walk()
+  #synth.steps = iter([next(rw) for x in range(40)] + [(None, 0.5)])
+  #write(synth, 10.5)
 
-  #play(Sine(Bias(-0.95, Amp(0.005, Square(2)))), 2)
-  #play(Sine(60), 2)
-  play(Amp(Bias(0.5, Amp(0.25, Sine(2))), Sequence((
-    (Triangle(220), 2),
-    (Sine(220), 2),
-  ))), 4)
+  import guitar_wave
+  class Guitar (PhasedSignal):
+    _phase = guitar_wave.data
 
+  from music import PianoRoll
+  import tabreader
+  synths = [Synth(steps=PianoRoll(33, n), oscillator=Guitar(), A=0.03, D=0.05,
+                  R=0.05)
+            for n in tabreader.read(tabreader.ex_tabs)]
+  write(MultiSynth(synths), 38)
