@@ -64,3 +64,18 @@ def chunk(iter, size):
 
 def byte_array (iter):
   return array.array('h', (_int16(s) for s in iter))
+
+
+class NamedDescriptor:
+  def __get__ (self, instance, owner):
+    return getattr(instance, self.varname)
+
+  def __set__ (self, instance, value):
+    setattr(instance, self.varname, value)
+
+class NamedMeta (type):
+  def __new__ (cls, name, bases, namespace):
+    for varname, var in namespace.items():
+      if isinstance(var, NamedDescriptor):
+        var.varname = '_' + varname
+    return type.__new__(cls, name, bases, namespace)

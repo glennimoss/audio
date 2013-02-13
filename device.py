@@ -1,62 +1,76 @@
+from util import NamedDescriptor, NamedMeta
 import math
 _tau = 2*math.pi
 
-"""
-All inputs and outputs should be [-1, 1]
-"""
-
-class InputSignal:
-  n = 0
-
-  def __init__ (self):
-    self.varname = '_sig{}'.format(InputSignal.n)
-    InputSignal.n += 1
-
-  def __get__ (self, instance, owner):
-    return getattr(instance, self.varname)
-
+class InputSignal (NamedDescriptor):
   def __set__ (self, instance, value):
+    super().__set__(instance, self._manip(value))
+
+  def _manip (self, value):
     if not isinstance(value, Signal):
       value = Const(value)
-    setattr(instance, self.varname, value)
+    return value
 
 class FrequencySignal (InputSignal):
-
-  def __get__ (self, instance, owner):
-    return lambda t: p2f(getattr(instance, self.varname)(t))
+  def _manip (self, value):
+    value = super()._manip(value)
+    if not isinstance(value, FrequencyChannel):
+      value = FrequencyChannel(value)
+    return value
 
 class SpaceTimeContinuumError (Exception):
   pass
 
-class Signal:
-  last_t = -1
-  last_samp = None
+class Signal (metaclass=NamedMeta):
+  """
+  Signals normally operate over [-1,1]. A subclass may change this.
+  """
 
-  def sample (self, t):
+  #last_t = -1
+  #last_samp = None
+
+  def __call__ (self, t):
     """
     Sample this signal at time index t. Each call to sample must be with a
     larger value for t.
     """
-    if t <= self.last_t:
-      import pdb;pdb.set_trace()
-      raise SpaceTimeContinuumError(
-        "We're moving back in time! Last t = {}, now = {}".format(
-          self.last_t, t))
+    #if t <= self.last_t:
+      #raise SpaceTimeContinuumError(
+        #"We're moving back in time! Last t = {}, now = {}".format(
+          #self.last_t, t))
 
-    samp = self._sample(t)
-    self.last_t = t
-    self.last_samp = samp
-    return samp
+    #samp = self._sample(t)
+    #self.last_t = t
+    #self.last_samp = samp
+    #return samp
+    pass
 
+class FrequencyChannel (Signal):
+  """
+  Frequency channels operate over [0,11000]
+  """
+  input = InputSignal()
+
+  def __init__ (self, input):
+    self.input = input
+    self.convert = not (
+      (isinstance(self.input, Const) and self.input.val > 1) or
+      (isinstance(self.input, FrequencyChannel)))
+      #self._sample = input._sample
+      #self.__call__ = input.__call__
+
+  #def _sample (self, t):
   def __call__ (self, t):
-    return self.sample(t)
-
+    if self.convert:
+      return (self.input(t)+1)*5500
+    return self.input(t)
 
 class Const (Signal):
   def __init__ (self, val):
     self.val = val
 
-  def _sample (self, t):
+  #def _sample (self, t):
+  def __call__ (self, t):
     return self.val
 
 class TriggerSignal (Signal):
@@ -71,7 +85,8 @@ class TriggerSignal (Signal):
     self.thresh = thresh
     self.hot = False
 
-  def _sample (self, t):
+  #def _sample (self, t):
+  def __call__ (self, t):
     samp = self.input(t)
 
     if not self.hot and samp >= self.thresh:
@@ -94,7 +109,8 @@ class GateSignal (Signal):
     self.input = input
     self.thresh = thresh
 
-  def _sample(self, t):
+  #def _sample(self, t):
+  def __call__ (self, t):
     return 0 if self.input(t) < self.thresh else 1
 
 
@@ -113,8 +129,11 @@ class ADSREnvelope (Signal):
     self.start_D = None
     self.start_S = None
     self.start_R = None
+    self.last_samp = None
 
-  def _sample (self, t):
+
+  #def _sample (self, t):
+  def __call__ (self, t):
     trigger = self.trigger(t)
     gate = self.gate(t)
     if trigger:
@@ -122,25 +141,27 @@ class ADSREnvelope (Signal):
       self.start_D = t + self.A
       self.start_S = self.start_D + self.D
 
+    samp = None
     if gate:
       if self.start_A <= t < self.start_D:
         # Attack
-        return (t - self.start_A) / self.A
+        samp = (t - self.start_A) / self.A
       elif self.start_D <= t < self.start_S:
         # Decay
-        return 1 - (t - self.start_D)/self.D
+        samp = 1 - (t - self.start_D)/self.D
       else:
         # Sustain
-        return self.S
-    elif self.last_samp:
+        samp = self.S
+    elif self.last_samp is not None:
       # Release...
       if not self.start_R:
         self.start_R = t
 
       if self.start_R <= t < self.start_R + self.R:
-        return self.S * (1 - (t - self.start_R)/self.R)
+        samp = self.S * (1 - (t - self.start_R)/self.R)
 
-    return 0
+    self.last_samp = samp
+    return samp
 
 def p2f (p):
   """
@@ -165,13 +186,26 @@ class PhasedSignal (Signal):
   def __init__ (self, pitch=None):
     self.freq = pitch
     self.pa = 0
+    self.last_t = 0
 
-  def _sample (self, t):
+  #def _sample (self, t):
+  def __call__ (self, t):
     dt = t - self.last_t
-    f = self.freq(t)
-    self.pa = (self.pa + dt*f) % 1
+    self.last_t = t
+    f = self._freq(t)
+    # df will use 14 bits
+    df = dt*f
+    # pa will be 24 bits
+    self.pa = (self.pa + df) % 1
 
     return self._phase(self.pa)
+
+    """
+    Using a fixed point PA:
+    df = dt*f * 2**24
+    self.pa = (self.pa + df) & 0xFFFFFF
+    return self._phase(self.pa >> 14)
+    """
 
 
   def _phase (self, p):
@@ -183,6 +217,7 @@ class Sine (PhasedSignal):
     return math.sin(_tau*p)
 
 class Saw (PhasedSignal):
+  _phase = [1 - 2*p for p in range(1)]
   def _phase (self, p):
     return 1 - 2*p
 
@@ -202,8 +237,9 @@ class Amp (Signal):
     self.ratio = ratio
     self.input = input
 
-  def _sample (self, t):
-    return self.ratio(t) * self.input(t)
+  #def _sample (self, t):
+  def __call__ (self, t):
+    return self._ratio(t) * self._input(t)
 
 class Bias (Signal):
   input = InputSignal()
@@ -213,22 +249,24 @@ class Bias (Signal):
     self.offset = offset
     self.input = input
 
-  def _sample (self, t):
-    return self.offset(t) + self.input(t)
+  #def _sample (self, t):
+  def __call__ (self, t):
+    return self._offset(t) + self._input(t)
 
 class Sequence (Signal):
   def __init__ (self, steps):
     self.steps = iter(steps)
-    self.start = 0
+    self.until = 0
     self._next_step()
 
   def _next_step (self):
-    self.input, self.dur = next(self.steps)
+    self.input, dur = next(self.steps)
+    self.until += dur
 
-  def _sample (self, t):
-    if t > self.start + self.dur:
+  #def _sample (self, t):
+  def __call__ (self, t):
+    if t > self.until:
       self._next_step()
-      self.start = t
 
     return self.input(t)
 
@@ -258,6 +296,7 @@ def play (input, dur):
   SAMPLERATE = out.setrate(DEFAULT_SAMPLERATE)
   print(SAMPLERATE)
   ALSAPERIOD = out.setperiodsize(int(SAMPLERATE/4))
+  out.dumpinfo()
 
   total = 0
   for bs in chunk(Sampler(input, SAMPLERATE, dur), ALSAPERIOD*CHANNELS):
@@ -289,6 +328,8 @@ def write (input, dur, filename='out.wav'):
   with open(filename + '.raw', 'wb') as rf:
     rf.write(bytes)
 
+def generate (input, dur):
+  return list(Sampler(input, DEFAULT_SAMPLERATE, dur))
 
 
 if __name__ == '__main__':
@@ -308,8 +349,11 @@ if __name__ == '__main__':
     #(Sine(f2p(440)), 2),
     #(Const(0), 2),
   #)), 4)
-  play(Amp(Bias(0.5, Amp(0.25, Square(f2p(2)))), Sequence((
-    (Triangle(f2p(220)), 2),
-    (Sine(f2p(220)), 2),
-  ))), 4)
-  #print([p2f(x) for x in Sampler(Sine(Const(1)), 4, 2)])
+
+  #play(Sine(Bias(-0.95, Amp(0.005, Square(2)))), 2)
+  play(Sine(60), 2)
+  #generate(Amp(Bias(0.5, Amp(0.25, Sine(2))), Sequence((
+    #(Triangle(220), 2),
+    #(Sine(220), 2),
+  #))), 4)
+
