@@ -1,22 +1,18 @@
+from collections import deque
 from util import NamedDescriptor, NamedMeta
-import math
-_tau = 2*math.pi
+from math import sin, floor, pi
+_tau = 2*pi
 
-class InputSignal (NamedDescriptor):
+class Input (NamedDescriptor):
+  def __init__ (self, type=None):
+    self.type = type
+
   def __set__ (self, instance, value):
-    super().__set__(instance, self._manip(value))
-
-  def _manip (self, value):
     if not isinstance(value, Signal):
       value = Const(value)
-    return value
-
-class FrequencySignal (InputSignal):
-  def _manip (self, value):
-    value = super()._manip(value)
-    if not isinstance(value, FrequencyChannel):
-      value = FrequencyChannel(value)
-    return value
+    if self.type and not isinstance(value, self.type):
+      value = self.type(value)
+    super().__set__(instance, value)
 
 class SpaceTimeContinuumError (Exception):
   pass
@@ -45,21 +41,20 @@ class Signal (metaclass=NamedMeta):
     #return samp
     pass
 
-class FrequencyChannel (Signal):
+class FrequencySignal (Signal):
   """
   Frequency channels operate over [0,11000]
   """
-  input = InputSignal()
+  input = Input()
 
   def __init__ (self, input):
     self.input = input
     self.convert = not (
       (isinstance(self.input, Const) and self.input.val > 1) or
-      (isinstance(self.input, FrequencyChannel)))
+      (isinstance(self.input, FrequencySignal)))
       #self._sample = input._sample
       #self.__call__ = input.__call__
 
-  #def _sample (self, t):
   def __call__ (self, t):
     if self.convert:
       return (self.input(t)+1)*5500
@@ -69,7 +64,6 @@ class Const (Signal):
   def __init__ (self, val):
     self.val = val
 
-  #def _sample (self, t):
   def __call__ (self, t):
     return self.val
 
@@ -79,76 +73,111 @@ class TriggerSignal (Signal):
   threshold. Only after the input signal has dropped below the threshold will
   the TriggerSignal be ready to be triggered again.
   """
+  input = Input()
+  thresh = Input()
 
-  def __init__ (self, input, thresh):
+  def __init__ (self, input, thresh=0.5):
     self.input = input
     self.thresh = thresh
     self.hot = False
 
-  #def _sample (self, t):
   def __call__ (self, t):
     samp = self.input(t)
+    thresh = self.thresh(t)
 
-    if not self.hot and samp >= self.thresh:
+    if not self.hot and samp >= thresh:
       self.hot = True
       return 1
 
-    if self.hot and samp < self.thresh:
+    if self.hot and samp < thresh:
       self.hot = False
 
     return 0
 
+class Trigger (TriggerSignal):
+  def __init__ (self):
+    self.firing = False
+
+  def fire (self):
+    self.firing = True
+
+  def __call__ (self, t):
+    if self.firing:
+      self.firing = False
+      return 1
+    return 0
 
 class GateSignal (Signal):
   """
   Outputs a sample of 1 if the input signal is >= the threshold, otherwise the
   output is 0.
   """
+  input = Input()
+  thresh = Thresh()
 
-  def __init__ (self, input, thresh):
+  def __init__ (self, input, thresh=0.5):
     self.input = input
     self.thresh = thresh
 
-  #def _sample(self, t):
   def __call__ (self, t):
-    return 0 if self.input(t) < self.thresh else 1
+    return 0 if self.input(t) < self.thresh(t) else 1
 
+class Gate (GateSignal):
+  def __init__ (self):
+    self.open = False
+
+  def on (self):
+    self.open = True
+
+  def off (self):
+    self.open = False
+
+  def __call__ (self, t):
+    return self.open*1
 
 
 class ADSREnvelope (Signal):
+  A = Input()
+  D = Input()
+  S = Input()
+  R = Input()
+  trigger = Input(TriggerSignal)
+  gate = Input(GateSignal)
+
   def __init__ (self, A=None, D=None, S=None, R=None, trigger=None,
-                trigger_thresh=0.5, gate=None, gate_thresh=0.5):
+                gate=None):
     self.A = A
     self.D = D
     self.S = S
     self.R = R
-    self.trigger = TriggerSignal(trigger, trigger_thresh)
-    self.gate = GateSignal(gate, gate_thresh)
+    self.trigger = trigger
+    self.gate = gate
 
     self.start_A = None
-    self.start_D = None
-    self.start_S = None
     self.start_R = None
     self.last_samp = None
 
 
-  #def _sample (self, t):
   def __call__ (self, t):
     trigger = self.trigger(t)
     gate = self.gate(t)
     if trigger:
       self.start_A = t
-      self.start_D = t + self.A
-      self.start_S = self.start_D + self.D
+      #self.start_D = t + self.A(t)
+      #self.start_S = self.start_D + self.D(t)
 
     samp = None
     if gate:
-      if self.start_A <= t < self.start_D:
+      A = self.A(t)
+      D = self.D(t)
+      start_D = self.startA + A
+      start_S = start_D + D
+      if self.start_A <= t < start_D:
         # Attack
-        samp = (t - self.start_A) / self.A
-      elif self.start_D <= t < self.start_S:
+        samp = (t - self.start_A) / A
+      elif start_D <= t < start_S:
         # Decay
-        samp = 1 - (t - self.start_D)/self.D
+        samp = 1 - (t - start_D) / D
       else:
         # Sustain
         samp = self.S
@@ -157,8 +186,9 @@ class ADSREnvelope (Signal):
       if not self.start_R:
         self.start_R = t
 
-      if self.start_R <= t < self.start_R + self.R:
-        samp = self.S * (1 - (t - self.start_R)/self.R)
+      R = self.R(t)
+      if self.start_R <= t < self.start_R + R:
+        samp = self.S * (1 - (t - self.start_R) / R)
 
     self.last_samp = samp
     return samp
@@ -181,94 +211,91 @@ def f2p (f):
   return f/5500 - 1
 
 class PhasedSignal (Signal):
-  freq = FrequencySignal()
+  freq = Input(FrequencySignal)
 
   def __init__ (self, pitch=None):
     self.freq = pitch
     self.pa = 0
     self.last_t = 0
 
-  #def _sample (self, t):
   def __call__ (self, t):
     dt = t - self.last_t
     self.last_t = t
     f = self._freq(t)
-    # df will use 14 bits
-    df = dt*f
-    # pa will be 24 bits
-    self.pa = (self.pa + df) % 1
-
-    return self._phase(self.pa)
-
-    """
-    Using a fixed point PA:
-    df = dt*f * 2**24
+    df = floor(dt*f * 2.0**24)
     self.pa = (self.pa + df) & 0xFFFFFF
-    return self._phase(self.pa >> 14)
-    """
-
-
-  def _phase (self, p):
-    """ Amplitude [-1,1] at phase [0,1] for this waveform. """
-    pass
+    return self._phase[self.pa >> 14]
 
 class Sine (PhasedSignal):
-  def _phase (self, p):
-    return math.sin(_tau*p)
+  _phase = [sin(_tau*p/1024) for p in range(1024)]
 
 class Saw (PhasedSignal):
-  _phase = [1 - 2*p for p in range(1)]
-  def _phase (self, p):
-    return 1 - 2*p
+  _phase = [1 - 2*p/1024 for p in range(1024)]
 
 class Square (PhasedSignal):
-  def _phase (self, p):
-    return 1 if p < 1/2 else -1
+  _phase = [1 if p/1024 < 1/2 else -1 for p in range(1024)]
 
-class Triangle (Saw):
-  def _phase (self, p):
-    return 2*abs(super()._phase((p - 1/4) % 1)) - 1
+class Triangle (PhasedSignal):
+  _phase = [2*abs(Saw._phase[(p - 256) % 1024]) - 1 for p in range(1024)]
 
 class Amp (Signal):
-  input = InputSignal()
-  ratio = InputSignal()
+  input = Input()
+  ratio = Input()
 
   def __init__ (self, ratio, input):
     self.ratio = ratio
     self.input = input
 
-  #def _sample (self, t):
   def __call__ (self, t):
     return self._ratio(t) * self._input(t)
 
 class Bias (Signal):
-  input = InputSignal()
-  offset = InputSignal()
+  input = Input()
+  offset = Input()
 
   def __init__ (self, offset, input):
     self.offset = offset
     self.input = input
 
-  #def _sample (self, t):
   def __call__ (self, t):
     return self._offset(t) + self._input(t)
 
 class Sequence (Signal):
-  def __init__ (self, steps):
-    self.steps = iter(steps)
+  def __init__ (self, steps=[]):
+    self.steps = deque(steps)
     self.until = 0
     self._next_step()
 
   def _next_step (self):
-    self.input, dur = next(self.steps)
+    self.input, dur = self.steps.popleft()
     self.until += dur
 
-  #def _sample (self, t):
+  def append (self, input, dur):
+    self.steps.append((input, dur))
+
+  def extend (self, steps)
+    self.steps.extend(steps)
+
   def __call__ (self, t):
     if t > self.until:
       self._next_step()
 
     return self.input(t)
+
+class Synth (Sequence):
+  oscillator = Input()
+  envelope = Input()
+
+  def __init__ (self, oscillator=Sine):
+    self.oscillator = oscillator
+    self.env_trigger = Trigger()
+    self.env_gate = Gate()
+    self.envelope = ADSREnvelope(100, 100, 0.8, 100, self.env_trigger,
+                                 self.env_gate)
+    self.output = Amp(self.envelope, self.seq)
+
+  def __call__ (self, t):
+    self.oscillator
 
 
 def Sampler (input, sample_rate, dur=None):
@@ -296,7 +323,6 @@ def play (input, dur):
   SAMPLERATE = out.setrate(DEFAULT_SAMPLERATE)
   print(SAMPLERATE)
   ALSAPERIOD = out.setperiodsize(int(SAMPLERATE/4))
-  out.dumpinfo()
 
   total = 0
   for bs in chunk(Sampler(input, SAMPLERATE, dur), ALSAPERIOD*CHANNELS):
@@ -351,9 +377,9 @@ if __name__ == '__main__':
   #)), 4)
 
   #play(Sine(Bias(-0.95, Amp(0.005, Square(2)))), 2)
-  play(Sine(60), 2)
-  #generate(Amp(Bias(0.5, Amp(0.25, Sine(2))), Sequence((
-    #(Triangle(220), 2),
-    #(Sine(220), 2),
-  #))), 4)
+  #play(Sine(60), 2)
+  play(Amp(Bias(0.5, Amp(0.25, Sine(2))), Sequence((
+    (Triangle(220), 2),
+    (Sine(220), 2),
+  ))), 4)
 
