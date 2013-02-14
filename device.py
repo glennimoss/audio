@@ -1,20 +1,9 @@
 from collections import deque
 from util import NamedDescriptor, NamedMeta
 from math import sin, floor, pi
+from numbers import Number
 
 _tau = 2*pi
-
-class Input (NamedDescriptor):
-  def __init__ (self, type=None, **kwargs):
-    self.type = type
-    self.kwargs = kwargs
-
-  def __set__ (self, instance, value):
-    if not isinstance(value, Signal):
-      value = Const(value)
-    if self.type and not isinstance(value, self.type):
-      value = self.type(value, **self.kwargs)
-    super().__set__(instance, value)
 
 class SpaceTimeContinuumError (Exception):
   pass
@@ -43,31 +32,47 @@ class Signal (metaclass=NamedMeta):
     #return samp
     pass
 
-class FrequencySignal (Signal):
-  """
-  Frequency channels operate over [0,11000]
-  """
-  input = Input()
-
-  def __init__ (self, input, convert=None):
-    self.input = input
-    self.convert = convert
-    if convert is None:
-      self.convert = not (
-        (isinstance(self._input, Const) and self._input.val > 1) or
-        (isinstance(self._input, FrequencySignal)))
-
-  def __call__ (self, t):
-    if self.convert:
-      return (self._input(t)+1)*5500
-    return self._input(t)
-
 class Const (Signal):
   def __init__ (self, val):
     self.val = val if val is not None else 0
 
   def __call__ (self, t):
     return self.val
+
+class Input (NamedDescriptor):
+  def __init__ (self, type=None, const_type=Const, **kwargs):
+    self.type = type
+    self.const_type = const_type
+    self.kwargs = kwargs
+
+  def __set__ (self, instance, value):
+    if not isinstance(value, Signal):
+      if self.const_type is None:
+        # TODO: This None -> 0 conversion is hacky
+        super().__set__(instance, value if value is not None else 0)
+        return
+      value = self.const_type(value)
+    if self.type and not isinstance(value, self.type):
+      value = self.type(value, **self.kwargs)
+    super().__set__(instance, value)
+
+class FrequencySignal (Signal):
+  """
+  Frequency channels operate over [0,11000]
+  """
+  input = Input()
+
+  def __init__ (self, input):
+    self.input = input
+
+  def __call__ (self, t):
+    return (self._input(t)+1)*5500
+
+class ConstFrequency (Const, FrequencySignal):
+  def __init__ (self, val):
+    if isinstance(val, Number) and  -1 <= val <= 1:
+      val = (val+1)*5500
+    super().__init__(val)
 
 class TriggerSignal (Signal):
   """
@@ -126,16 +131,16 @@ class GateSignal (Signal):
 
 class Gate (GateSignal):
   def __init__ (self):
-    self.open = False
+    self.open = 0
 
   def on (self):
-    self.open = True
+    self.open = 1
 
   def off (self):
-    self.open = False
+    self.open = 0
 
   def __call__ (self, t):
-    return self.open*1
+    return self.open
 
 
 class ADSREnvelope (Signal):
@@ -217,7 +222,8 @@ def f2p (f):
   return f/5500 - 1
 
 class PhasedSignal (Signal):
-  freq = Input(FrequencySignal)
+  #freq = Input(FrequencySignal, const_type=ConstFrequency)
+  freq = Input(FrequencySignal, const_type=None)
 
   def __init__ (self, freq=None):
     self.freq = freq
@@ -227,7 +233,9 @@ class PhasedSignal (Signal):
   def __call__ (self, t):
     dt = t - self.last_t
     self.last_t = t
-    f = self._freq(t)
+    f = self._freq
+    if callable(f):
+      f = f(t)
     df = floor(dt*f * 2.0**24)
     self.pa = (self.pa + df) & 0xFFFFFF
     return self._phase[self.pa >> 14]
@@ -319,9 +327,9 @@ class Synth (Sequence):
     return self.output(t)
 
 def MultiSynth (synths):
+  numSamps = len(synths)
   def output (t):
-    samples = [synth(t) for synth in synths]
-    return sum(samples)/len(samples)
+    return sum(synth(t) for synth in synths)/numSamps
 
   return output
 
@@ -426,4 +434,4 @@ if __name__ == '__main__':
   synths = [Synth(steps=PianoRoll(33, n), oscillator=Guitar(), A=0.03, D=0.05,
                   R=0.05)
             for n in tabreader.read(tabreader.ex_tabs)]
-  write(MultiSynth(synths), 38)
+  generate(MultiSynth(synths), 10) #38)
