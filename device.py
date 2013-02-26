@@ -39,6 +39,20 @@ class Const (Signal):
   def __call__ (self, t):
     return self.val
 
+def asInput (input, type=None, const_type=Const, **kwargs):
+  if not isinstance(input, Signal):
+    if const_type is None:
+      # TODO: This None -> 0 conversion is hacky
+      if input is None:
+        input = 0
+    else:
+      input =  const_type(input)
+
+  if type and not isinstance(input, type):
+    input = type(input, **kwargs)
+
+  return input
+
 class Input (NamedDescriptor):
   def __init__ (self, type=None, const_type=Const, **kwargs):
     self.type = type
@@ -46,15 +60,7 @@ class Input (NamedDescriptor):
     self.kwargs = kwargs
 
   def __set__ (self, instance, value):
-    if not isinstance(value, Signal):
-      if self.const_type is None:
-        # TODO: This None -> 0 conversion is hacky
-        super().__set__(instance, value if value is not None else 0)
-        return
-      value = self.const_type(value)
-    if self.type and not isinstance(value, self.type):
-      value = self.type(value, **self.kwargs)
-    super().__set__(instance, value)
+    super().__set__(instance, asInput(value, **self.kwargs))
 
 class FrequencySignal (Signal):
   """
@@ -275,56 +281,53 @@ class Bias (Signal):
   def __call__ (self, t):
     return self._offset(t) + self._input(t)
 
+def AmplitudeModulator (carrier=None, modulator=None):
+  return Amp(Amp(0.5, Bias(1, modulator)), carrier)
+
 class Sequence (Signal):
   def __init__ (self, steps=[]):
     self.steps = iter(steps)
-    self.until = 0
-    self._next_step()
+    self.until = -1
 
-  def _next_step (self):
-    try:
-      self.input, dur = next(self.steps)
-      self.until += dur
-    except StopIteration:
-      self.input = None
-      self.until = 0
-
-  def __call__ (self, t):
-    if t > self.until and self.steps:
-      self._next_step()
-
-    if not self.input:
-      return 0
-    if callable(self.input):
-      return self.input(t)
-    return self.input
-
-class Synth (Sequence):
-  oscillator = Input()
-  envelope = Input()
-
-  def __init__ (self, steps=[], oscillator=Sine(), A=0.1, D=0.1, S=0.5, R=0.1):
-    self.oscillator = oscillator
-    self.env_trigger = Trigger()
-    self.env_gate = Gate()
-    self.envelope = ADSREnvelope(A, D, S, R, self.env_trigger, self.env_gate)
-    self.output = Amp(self._envelope, self._oscillator)
-    super().__init__(steps)
+    self.trigger = Trigger()
+    self.gate = Gate()
 
   def __call__ (self, t):
     if t > self.until:
-      self._next_step()
-      if callable(self.input):
-        freq = self.input(t)
-      freq = self.input
-      if freq is None:
-        self.env_gate.off()
-      else:
-        self.env_trigger.fire()
-        self.env_gate.on()
-        self._oscillator.freq = freq
+      try:
+        self.value, dur = next(self.steps)
+        print('Sequence:', self.value, dur)
+        self.until = t + dur
+      except StopIteration:
+        self.value = None
+        self.until = -1
 
-    return self.output(t)
+      if self.value is None:
+        self.gate.off()
+        self.value = 0
+      else:
+        self.trigger.fire()
+        self.gate.on()
+
+    return self.value
+
+class FrequencySequence (Sequence, FrequencySignal):
+  pass
+
+def Synth (steps=[], oscillator=Sine, A=0.1, D=0.1, S=0.5, R=0.1):
+  sequencer = FrequencySequence(steps)
+  oscillator = oscillator(sequencer)
+  envelope = ADSREnvelope(A, D, S, R, sequencer.trigger, sequencer.gate)
+  return Amp(envelope, oscillator)
+
+def AMSynth (steps=[], oscillator=Sine, A=0.1, D=0.1, S=0.5, R=0.1):
+  sequencer = FrequencySequence(steps)
+  carrier = oscillator(sequencer)
+  modulator = oscillator(Bias(100, sequencer)) # +- 100Hz
+  #modulator = oscillator(100)
+  amosc = AmplitudeModulator(carrier, modulator)
+  envelope = ADSREnvelope(A, D, S, R, sequencer.trigger, sequencer.gate)
+  return Amp(envelope, amosc)
 
 def MultiSynth (synths):
   numSamps = len(synths)
@@ -347,7 +350,7 @@ def Sampler (input, sample_rate, dur=None):
       break
 
 CHANNELS = 1
-DEFAULT_SAMPLERATE = 44100
+DEFAULT_SAMPLERATE = 44100//2
 
 def play (input, dur):
   import alsaaudio
@@ -358,7 +361,7 @@ def play (input, dur):
   out.setformat(alsaaudio.PCM_FORMAT_S16_LE)
   SAMPLERATE = out.setrate(DEFAULT_SAMPLERATE)
   print(SAMPLERATE)
-  ALSAPERIOD = out.setperiodsize(int(SAMPLERATE/4))
+  ALSAPERIOD = out.setperiodsize(SAMPLERATE//4)
 
   total = 0
   for bs in chunk(Sampler(input, SAMPLERATE, dur), ALSAPERIOD*CHANNELS):
@@ -410,28 +413,29 @@ def random_walk ():
 
 
 if __name__ == '__main__':
-  #synth = Synth(oscillator=Square(), A=0.03, D=0.03)
-  #synth.extend((
-    #(440, 0.25),
-    #(440 * 2**(2/12), 0.25),
-    #(440 * 2**(3/12), 0.25),
-    #(None, 0.25),
-    #(220, 0.25),
-    #(220 * 2**(2/12), 0.25),
-    #(220 * 2**(3/12), 0.25),
-  #))
+  synth = AMSynth(oscillator=Sine, A=0.03, D=0.03,
+    steps = (
+    (440, 0.25),
+    (440 * 2**(2/12), 0.25),
+    (440 * 2**(3/12), 0.25),
+    (None, 0.25),
+    (220, 0.25),
+    (220 * 2**(2/12), 0.25),
+    (220 * 2**(3/12), 0.25),
+  ))
+  play(synth, 2)
 
   #rw = random_walk()
   #synth.steps = iter([next(rw) for x in range(40)] + [(None, 0.5)])
   #write(synth, 10.5)
 
-  import guitar_wave
-  class Guitar (PhasedSignal):
-    _phase = guitar_wave.data
+  #import guitar_wave
+  #class Guitar (PhasedSignal):
+    #_phase = guitar_wave.data
 
-  from music import PianoRoll
-  import tabreader
-  synths = [Synth(steps=PianoRoll(33, n), oscillator=Guitar(), A=0.03, D=0.05,
-                  R=0.05)
-            for n in tabreader.read(tabreader.ex_tabs)]
-  generate(MultiSynth(synths), 10) #38)
+  #from music import PianoRoll
+  #import tabreader
+  #synths = [Synth(steps=PianoRoll(33, n), oscillator=Guitar(), A=0.03, D=0.05,
+                  #R=0.05)
+            #for n in tabreader.read(tabreader.ex_tabs)]
+  #play(MultiSynth(synths), 10) #38)
