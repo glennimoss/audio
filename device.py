@@ -1,6 +1,6 @@
 from collections import deque
 from util import NamedDescriptor, NamedMeta
-from math import sin, floor, pi
+from math import sin, floor, pi, log10
 from numbers import Number
 
 _tau = 2*pi
@@ -45,8 +45,9 @@ def asInput (input, type=None, const_type=Const, **kwargs):
       # TODO: This None -> 0 conversion is hacky
       if input is None:
         input = 0
+      return input
     else:
-      input =  const_type(input)
+      input = const_type(input)
 
   if type and not isinstance(input, type):
     input = type(input, **kwargs)
@@ -60,7 +61,9 @@ class Input (NamedDescriptor):
     self.kwargs = kwargs
 
   def __set__ (self, instance, value):
-    super().__set__(instance, asInput(value, **self.kwargs))
+    super().__set__(instance, asInput(value, self.type,
+                                      const_type=self.const_type,
+                                      **self.kwargs))
 
 class FrequencySignal (Signal):
   """
@@ -148,8 +151,72 @@ class Gate (GateSignal):
   def __call__ (self, t):
     return self.open
 
+class PositiveSignal (Signal):
+  input = Input()
 
-class ADSREnvelope (Signal):
+  def __init__ (self, input):
+    self.input = input
+
+  def __call__ (self, t):
+    return (self._input(t) + 1)/2
+
+class LinearRamp (Signal):
+  def __init__ (self, t_start, dur):
+    self.t_start = t_start
+    self.dur = dur
+
+  def __call__ (self, t):
+    if t < self.t_start:
+      return -1
+      #return 0
+    if t > self.t_start + self.dur:
+      return 1
+
+    return (t - self.t_start) / self.dur * 2 - 1
+    #return (t - self.t_start) / self.dur
+
+class PolyRamp (Signal):
+  def __init__ (self, t_start, dur, power=2):
+    self.t_start = t_start
+    self.dur = dur
+    self.power = power
+
+  def __call__ (self, t):
+    if t < self.t_start:
+      return -1
+    if t > self.t_start + self.dur:
+      return 1
+
+    return ((t - self.t_start)/self.dur)**self.power * 2 - 1
+
+class ExpRamp (Signal):
+  def __init__ (self, t_start, dur):
+    self.t_start = t_start
+    self.dur = dur
+
+  def __call__ (self, t):
+    if t < self.t_start:
+      return -1
+    if t > self.t_start + self.dur:
+      return 1
+
+    return (10**((t - self.t_start)/self.dur) - 1)/9 * 2 - 1
+
+class LogRamp (Signal):
+  def __init__ (self, t_start, dur):
+    self.t_start = t_start
+    self.dur = dur
+
+  def __call__ (self, t):
+    if t < self.t_start:
+      return -1
+    if t > self.t_start + self.dur:
+      return 1
+
+    return log10(((t - self.t_start)/self.dur)*9 + 1) * 2 - 1
+
+
+class ADSREnvelope (PositiveSignal):
   A = Input()
   D = Input()
   S = Input()
@@ -235,6 +302,7 @@ class PhasedSignal (Signal):
     self.freq = freq
     self.pa = 0
     self.last_t = 0
+    self.last_f = 0
 
   def __call__ (self, t):
     dt = t - self.last_t
@@ -242,6 +310,10 @@ class PhasedSignal (Signal):
     f = self._freq
     if callable(f):
       f = f(t)
+    if not f:
+      f = self.last_f
+    else:
+      self.last_f = f
     df = floor(dt*f * 2.0**24)
     self.pa = (self.pa + df) & 0xFFFFFF
     return self._phase[self.pa >> 14]
@@ -260,7 +332,7 @@ class Triangle (PhasedSignal):
 
 class Amp (Signal):
   input = Input()
-  ratio = Input()
+  ratio = Input(PositiveSignal)
 
   def __init__ (self, ratio, input):
     self.ratio = ratio
@@ -269,6 +341,18 @@ class Amp (Signal):
   def __call__ (self, t):
     return self._ratio(t) * self._input(t)
 
+def Mult (factor, sig):
+
+  class Mult (type(sig)):
+    input = Input()
+
+    def __init__ (self, input):
+      self.input = input
+
+    def __call__ (self, t):
+      return factor * self._input(t)
+
+  return Mult(sig)
 
 class Bias (Signal):
   input = Input()
@@ -280,9 +364,6 @@ class Bias (Signal):
 
   def __call__ (self, t):
     return self._offset(t) + self._input(t)
-
-def AmplitudeModulator (carrier=None, modulator=None):
-  return Amp(Amp(0.5, Bias(1, modulator)), carrier)
 
 class Sequence (Signal):
   def __init__ (self, steps=[]):
@@ -323,9 +404,20 @@ def Synth (steps=[], oscillator=Sine, A=0.1, D=0.1, S=0.5, R=0.1):
 def AMSynth (steps=[], oscillator=Sine, A=0.1, D=0.1, S=0.5, R=0.1):
   sequencer = FrequencySequence(steps)
   carrier = oscillator(sequencer)
-  modulator = oscillator(Bias(100, sequencer)) # +- 100Hz
-  #modulator = oscillator(100)
-  amosc = AmplitudeModulator(carrier, modulator)
+  modulator = oscillator(Mult(2, sequencer)) # +- 100Hz
+  #modulator = oscillator(50)
+  #modulator = Bias(0.6, Amp(0.4, oscillator(100)))
+  amosc = Amp(modulator, carrier)
+  envelope = ADSREnvelope(A, D, S, R, sequencer.trigger, sequencer.gate)
+  return Amp(envelope, amosc)
+
+def RMSynth (steps=[], oscillator=Sine, A=0.1, D=0.1, S=0.5, R=0.1):
+  sequencer = FrequencySequence(steps)
+  carrier = oscillator(sequencer)
+  #modulator = oscillator(Bias(-100, sequencer)) # +- 100Hz
+  modulator = oscillator(50)
+  #modulator = Bias(0.6, Amp(0.4, oscillator(100)))
+  amosc = Mult(modulator, carrier)
   envelope = ADSREnvelope(A, D, S, R, sequencer.trigger, sequencer.gate)
   return Amp(envelope, amosc)
 
@@ -413,17 +505,18 @@ def random_walk ():
 
 
 if __name__ == '__main__':
-  synth = AMSynth(oscillator=Sine, A=0.03, D=0.03,
+  synth = AMSynth(oscillator=Sine, A=0.13, D=0.03, S=0.5, R=0.5,
     steps = (
     (440, 0.25),
     (440 * 2**(2/12), 0.25),
     (440 * 2**(3/12), 0.25),
-    (None, 0.25),
+    (None, 1.25),
     (220, 0.25),
     (220 * 2**(2/12), 0.25),
     (220 * 2**(3/12), 0.25),
   ))
-  play(synth, 2)
+  write(synth, 4)
+
 
   #rw = random_walk()
   #synth.steps = iter([next(rw) for x in range(40)] + [(None, 0.5)])
