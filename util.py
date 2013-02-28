@@ -1,6 +1,6 @@
 import array
 from itertools import islice
-from functools import partial
+from functools import partial, wraps
 
 class classproperty (object):
 
@@ -83,3 +83,11 @@ class NamedMeta (type):
       if isinstance(var, NamedDescriptor):
         var.varname = '_' + varname
     return type.__new__(cls, name, bases, namespace)
+
+def configable (func):
+  @wraps(func)
+  def fn (*args, **kwargs):
+    if not args:
+      return partial(func, **kwargs)
+    return func(*args, **kwargs)
+  return fn

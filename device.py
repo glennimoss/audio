@@ -1,5 +1,5 @@
 from collections import deque
-from util import NamedDescriptor, NamedMeta
+from util import NamedDescriptor, NamedMeta, configable
 from math import sin, floor, pi, log10
 from numbers import Number
 
@@ -302,7 +302,6 @@ class PhasedSignal (Signal):
     self.freq = freq
     self.pa = 0
     self.last_t = 0
-    self.last_f = 0
 
   def __call__ (self, t):
     dt = t - self.last_t
@@ -310,10 +309,6 @@ class PhasedSignal (Signal):
     f = self._freq
     if callable(f):
       f = f(t)
-    if not f:
-      f = self.last_f
-    else:
-      self.last_f = f
     df = floor(dt*f * 2.0**24)
     self.pa = (self.pa + df) & 0xFFFFFF
     return self._phase[self.pa >> 14]
@@ -341,18 +336,20 @@ class Amp (Signal):
   def __call__ (self, t):
     return self._ratio(t) * self._input(t)
 
-def Mult (factor, sig):
+def Mult (factor, carrier):
 
-  class Mult (type(sig)):
-    input = Input()
+  class Mult (type(carrier)):
+    left = Input()
+    right = Input()
 
-    def __init__ (self, input):
-      self.input = input
+    def __init__ (self, left, right):
+      self.left = left
+      self.right = right
 
     def __call__ (self, t):
-      return factor * self._input(t)
+      return self._left(t) * self._right(t)
 
-  return Mult(sig)
+  return Mult(factor, carrier)
 
 class Bias (Signal):
   input = Input()
@@ -376,52 +373,52 @@ class Sequence (Signal):
   def __call__ (self, t):
     if t > self.until:
       try:
-        self.value, dur = next(self.steps)
-        print('Sequence:', self.value, dur)
+        next_value, dur = next(self.steps)
+        print('Sequence:', next_value, dur)
         self.until = t + dur
       except StopIteration:
-        self.value = None
+        next_value = None
         self.until = -1
 
-      if self.value is None:
+      if next_value is None:
         self.gate.off()
-        self.value = 0
+        # Keep our previous self.value
       else:
         self.trigger.fire()
         self.gate.on()
+        self.value = next_value
 
     return self.value
 
 class FrequencySequence (Sequence, FrequencySignal):
   pass
 
-def Synth (steps=[], oscillator=Sine, A=0.1, D=0.1, S=0.5, R=0.1):
+def Synth (steps=[], oscillator=Sine, modifier=None,
+           A=0.1, D=0.1, S=0.5, R=0.1):
   sequencer = FrequencySequence(steps)
-  oscillator = oscillator(sequencer)
+  freq_input = sequencer
+  if callable(modifier):
+    freq_input = modifier(freq_input)
+  oscillator = oscillator(freq_input)
   envelope = ADSREnvelope(A, D, S, R, sequencer.trigger, sequencer.gate)
   return Amp(envelope, oscillator)
 
-def AMSynth (steps=[], oscillator=Sine, A=0.1, D=0.1, S=0.5, R=0.1):
-  sequencer = FrequencySequence(steps)
-  carrier = oscillator(sequencer)
-  modulator = oscillator(Mult(2, sequencer)) # +- 100Hz
-  #modulator = oscillator(50)
-  #modulator = Bias(0.6, Amp(0.4, oscillator(100)))
-  amosc = Amp(modulator, carrier)
-  envelope = ADSREnvelope(A, D, S, R, sequencer.trigger, sequencer.gate)
-  return Amp(envelope, amosc)
+def AMSynth (input, factor=2):
+  carrier = Sine(input)
+  modulator = Sine(Mult(factor, input))
+  return Amp(modulator, carrier)
 
-def RMSynth (steps=[], oscillator=Sine, A=0.1, D=0.1, S=0.5, R=0.1):
-  sequencer = FrequencySequence(steps)
-  carrier = oscillator(sequencer)
-  #modulator = oscillator(Bias(-100, sequencer)) # +- 100Hz
-  modulator = oscillator(50)
-  #modulator = Bias(0.6, Amp(0.4, oscillator(100)))
-  amosc = Mult(modulator, carrier)
-  envelope = ADSREnvelope(A, D, S, R, sequencer.trigger, sequencer.gate)
-  return Amp(envelope, amosc)
+def RMSynth (input, freq=50):
+  carrier = Sine(input)
+  modulator = Sine(freq)
+  return Mult(modulator, carrier)
 
-def MultiSynth (synths):
+@configable
+def Vibrato (input, freq=6, cents=50):
+  modulator = Bias(1, Mult(0.0005946*cents, Sine(freq)))
+  return Mult(modulator, input)
+
+def Mixer (synths):
   numSamps = len(synths)
   def output (t):
     return sum(synth(t) for synth in synths)/numSamps
@@ -505,7 +502,7 @@ def random_walk ():
 
 
 if __name__ == '__main__':
-  synth = AMSynth(oscillator=Sine, A=0.13, D=0.03, S=0.5, R=0.5,
+  synth = Synth(modifier=Vibrato(freq=3.2), A=0.13, D=0.03, S=0.5, R=0.5,
     steps = (
     (440, 0.25),
     (440 * 2**(2/12), 0.25),
@@ -515,7 +512,7 @@ if __name__ == '__main__':
     (220 * 2**(2/12), 0.25),
     (220 * 2**(3/12), 0.25),
   ))
-  write(synth, 4)
+  play(synth, 4)
 
 
   #rw = random_walk()
@@ -531,4 +528,4 @@ if __name__ == '__main__':
   #synths = [Synth(steps=PianoRoll(33, n), oscillator=Guitar(), A=0.03, D=0.05,
                   #R=0.05)
             #for n in tabreader.read(tabreader.ex_tabs)]
-  #play(MultiSynth(synths), 10) #38)
+  #play(Mixer(synths), 10) #38)
