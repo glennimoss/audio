@@ -1,5 +1,5 @@
 from collections import deque
-from util import NamedDescriptor, NamedMeta, configable
+from util import NamedDescriptor, NamedMeta, configable, clamp
 from math import sin, floor, pi, log10
 from numbers import Number
 
@@ -325,6 +325,26 @@ class Square (PhasedSignal):
 class Triangle (PhasedSignal):
   _phase = [2*abs(Saw._phase[(p - 256) % 1024]) - 1 for p in range(1024)]
 
+def FourierSaw (harmonics):
+  class FourierSaw (PhasedSignal):
+    _phase = [2/pi * sum(sin(_tau*h * p/1024)/h for h in range(1, harmonics+1))
+              for p in range(1024)]
+  return FourierSaw
+
+def FourierSquare (harmonics):
+  class FourierSquare (PhasedSignal):
+    _phase = [4/pi * sum(sin(_tau*(2*h - 1) * p/1024)/(2*h - 1)
+                         for h in range(1, harmonics+1))
+              for p in range(1024)]
+  return FourierSquare
+
+def FourierTriangle (harmonics):
+  class FourierTriangle (PhasedSignal):
+    _phase = [8/pi**2 * sum((-1)**h * sin(_tau*(2*h - 1) * p/1024)/(2*h - 1)**2
+                         for h in range(1, harmonics+1))
+              for p in range(1024)]
+  return FourierTriangle
+
 class Amp (Signal):
   input = Input()
   ratio = Input(PositiveSignal)
@@ -366,6 +386,7 @@ class Sequence (Signal):
   def __init__ (self, steps=[]):
     self.steps = iter(steps)
     self.until = -1
+    self.value = 0
 
     self.trigger = Trigger()
     self.gate = Gate()
@@ -464,6 +485,7 @@ def play (input, dur):
   out.close()
 
 def write (input, dur, filename='out.wav'):
+  print(DEFAULT_SAMPLERATE)
   import wave, array
   from util import byte_array
 
@@ -498,11 +520,19 @@ def random_walk ():
       yield (freq, 0.25)
       steps = random.randint(-12, 12)
       freq *= 2**(steps/12)
+      freq = clamp(freq, 20, 10000)
+
 
 
 
 if __name__ == '__main__':
-  synth = Synth(modifier=Vibrato(freq=3.2), A=0.13, D=0.03, S=0.5, R=0.5,
+  #rw = random_walk()
+  #synth = Synth(modifier=Vibrato(freq=3.2), oscillator=Square, A=0.13, D=0.03, S=0.5, R=0.5,
+  #synth = Synth(oscillator=FourierSaw(20), A=0.03, D=0.03, S=5, R=0.5,
+  synth = Synth(oscillator=Saw, A=0.03, D=0.03, S=5, R=0.5,
+  #synth = Synth(oscillator=FourierTriangle(80), A=0.03, D=0.03, S=5, R=0.5,
+  #synth = Synth(oscillator=Sine, A=0.05, D=0.03, S=5, R=0.5,
+                #modifier=Vibrato(freq=4, cents=25),
     steps = (
     (440, 0.25),
     (440 * 2**(2/12), 0.25),
@@ -513,10 +543,11 @@ if __name__ == '__main__':
     (220 * 2**(3/12), 0.25),
   ))
   play(synth, 4)
+  #play(Amp(Mult(-1, FourierSaw(20)(4)), synth), 4)
+  #play(Amp(Mult(-1, Saw(4)), synth), 4)
 
 
-  #rw = random_walk()
-  #synth.steps = iter([next(rw) for x in range(40)] + [(None, 0.5)])
+    #steps=iter([next(rw) for x in range(40)] + [(None, 0.5)]))
   #write(synth, 10.5)
 
   #import guitar_wave

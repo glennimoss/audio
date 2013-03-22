@@ -43,10 +43,10 @@ class cimethod:
     return func(obj, *args, **kwargs)
 
 
-_clamp = lambda x,l,h: min(max(l,x), h)
+clamp = lambda x,l,h: min(max(l,x), h)
 def _int16 (f):
   v = int(f * 32767)
-  return v if -32767 <= v <= 32767 else _clamp(v, -32767, 32767)
+  return v if -32767 <= v <= 32767 else clamp(v, -32767, 32767)
 
 def chunk(iter, size):
   a = array.array('h', (0 for x in range(size)))
