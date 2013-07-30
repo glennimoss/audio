@@ -64,7 +64,7 @@ def chunk(iter, size):
       for i in range(i+1, size):
         a[i] = 0
 
-    yield a
+    yield a.tobytes()
 
 def byte_array (iter):
   return array.array('h', (_int16(s) for s in iter))

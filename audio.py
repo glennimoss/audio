@@ -1,4 +1,4 @@
-import sys, wave, math, struct, random, array, re, alsaaudio, operator
+import sys, wave, math, struct, random, array, re, pyaudio, operator
 from itertools import islice
 from music import *
 import sounds, tabreader
@@ -59,25 +59,20 @@ def play (data=None, **kwargs):
   if data is None:
     data = gensound(**kwargs)
 
-  out = alsaaudio.PCM()
-  out.setchannels(_CHANNELS)
-  out.setformat(alsaaudio.PCM_FORMAT_S16_LE)
-  sounds.SAMPLERATE = out.setrate(_DEFAULT_SAMPLERATE)
+  sounds.SAMPLERATE = _DEFAULT_SAMPLERATE
   sounds.SAMPLEDUR = 1/sounds.SAMPLERATE * 1000
-  _ALSAPERIOD = out.setperiodsize(int(sounds.SAMPLERATE/4))
-  #print(sounds.SAMPLERATE, _ALSAPERIOD)
+  _BUFPERIOD = int(sounds.SAMPLERATE/4)
 
-  wroten = []
-  for bs in chunk(data, _ALSAPERIOD*_CHANNELS):
-    wrote = out.write(bs)
-    wroten.append(wrote)
-    if wrote != _ALSAPERIOD:
-      print("WTF? only wrote", wrote, "/", _ALSAPERIOD)
+  p = pyaudio.PyAudio()
+  out = p.open(rate=_DEFAULT_SAMPLERATE, format=pyaudio.paInt16,
+               channels=_CHANNELS, frames_per_buffer=_BUFPERIOD, output=True,
+              )
 
-  #print("written", wroten)
+  for bs in chunk(data, _BUFPERIOD*_CHANNELS):
+    out.write(bs)
 
   out.close()
-  #print("closed")
+  p.terminate()
 
 def write (filename="out", data=None, **kwargs):
   if data is None:
