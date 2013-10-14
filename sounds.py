@@ -4,6 +4,12 @@ from util import cimethod
 SAMPLERATE = 44100
 SAMPLEDUR = 1/SAMPLERATE * 1000
 
+def set_samplerate (sr):
+  global SAMPLERATE, SAMPLEDUR
+  SAMPLERATE = sr
+  SAMPLEDUR = 1/SAMPLERATE * 1000
+
+
 _clamp = lambda x,l,h: min(max(l,x), h)
 _tau = 2*math.pi
 

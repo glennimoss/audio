@@ -3,7 +3,7 @@ from itertools import islice
 from music import *
 import sounds, tabreader
 from sounds import *
-from util import chunk
+from util import chunk, _int16
 
 _CHANNELS = 1
 _DEFAULT_SAMPLERATE = 44100
@@ -59,8 +59,7 @@ def play (data=None, **kwargs):
   if data is None:
     data = gensound(**kwargs)
 
-  sounds.SAMPLERATE = _DEFAULT_SAMPLERATE
-  sounds.SAMPLEDUR = 1/sounds.SAMPLERATE * 1000
+  sounds.set_samplerate(_DEFAULT_SAMPLERATE)
   _BUFPERIOD = int(sounds.SAMPLERATE/4)
 
   p = pyaudio.PyAudio()
